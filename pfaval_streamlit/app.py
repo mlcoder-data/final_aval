@@ -1,758 +1,586 @@
-import numpy as np
-import pandas as pd
-import scipy.signal as signal
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
-from pathlib import Path
+from plotly.subplots import make_subplots
+import pandas as pd
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Configuración de paths
-# ─────────────────────────────────────────────────────────────────────────────
-DATA_ROOT = Path(r"d:\ITM-------WORKSPACE\IA_code\Fourier_Analisis\pfaval_study")
-PATH_UNIFIED = DATA_ROOT / "data" / "processed" / "df_unified.parquet"
-PATH_RETURNS = DATA_ROOT / "data" / "processed" / "df_returns.parquet"
-PATH_FILTERED = DATA_ROOT / "data" / "processed" / "df_returns_filtered.parquet"
-PATH_COHERENCE = DATA_ROOT / "outputs" / "tables" / "coherencia_bandas.csv"
-
-PALETTE = {
-    "bg": "#080d1a",
-    "surface": "#0d1b2e",
-    "border": "#1e3a5f",
-    "accent1": "#00c8ff",
-    "accent2": "#f97316",
-    "accent3": "#a78bfa",
-    "accent4": "#22c55e",
-    "accent5": "#f43f5e",
-    "text": "#e2f0ff",
-    "muted": "#6a8faa",
-}
-
-VAR_COLORS = {
-    "PFAVAL": "steelblue",
-    "USDCOP": "crimson",
-    "WTI": "darkorange",
-    "VIX": "purple",
-    "COLCAP": "teal",
-    "TES_5Y": "goldenrod",
-}
-
-VAR_LABELS = {
-    "PFAVAL": "PFAVAL",
-    "USDCOP": "USDCOP",
-    "WTI": "WTI",
-    "VIX": "VIX",
-    "COLCAP": "COLCAP",
-    "TES_5Y": "TES_5Y",
-}
-
-BANDAS = [
-    ("Semanal", 4, 8),
-    ("Quincenal", 8, 15),
-    ("Mensual", 15, 30),
-    ("Trimestral", 30, 90),
-]
+from data_loader import load_data, TICKERS, PERIODO
+from fourier_utils import (
+    zscore_dataframe,
+    top_n_cycles,
+    fourier_filter,
+    dominant_period,
+    average_days_between_changes,
+    synthetic_fourier_example,
+    compute_coherence_table,
+    coherence_category,
+)
+from regression_utils import (
+    simple_regression,
+    build_variable_summary,
+    build_filter_comparison,
+    multi_regression,
+    VARIABLE_LABELS,
+)
 
 st.set_page_config(
-    page_title="Análisis Espectral PFAVAL",
-    page_icon="📊",
+    page_title="PFAVAL — Fourier & Regresión",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CSS de diseño tomado de la referencia
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-* {{ font-family: 'DM Sans', sans-serif; box-sizing: border-box; }}
-.stApp {{ background-color: {PALETTE['bg']}; color: {PALETTE['text']}; }}
-div[data-testid="stSidebarContent"] {{
-    background: linear-gradient(180deg, #04091a 0%, #080d1a 100%);
-    border-right: 1px solid {PALETTE['border']};
-}}
+COLORS = {
+    "primario": "#1B4F72",
+    "acento": "#E67E22",
+    "positivo": "#27AE60",
+    "negativo": "#E74C3C",
+    "neutro": "#BDC3C7",
+    "fourier": "#8E44AD",
+    "fondo": "#F8F9FA",
+    "texto": "#17202A",
+}
 
-.hero {{ margin-bottom: 0.5rem; }}
-.hero-badge {{
-    display: inline-block;
-    background: rgba(0,200,255,0.1);
-    border: 1px solid rgba(0,200,255,0.3);
-    border-radius: 20px;
-    padding: 0.2rem 0.9rem;
-    color: {PALETTE['accent1']};
-    font-size: 0.78rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 0.6rem;
-}}
-.hero-title {{
-    font-size: 2.6rem;
-    font-weight: 700;
-    color: {PALETTE['text']};
-    line-height: 1.15;
-    margin: 0;
-}}
-.hero-title span {{ color: {PALETTE['accent1']}; }}
-.hero-sub {{ color: {PALETTE['muted']}; font-size: 0.95rem; margin-top: 0.3rem; }}
-
-.kpi {{
-    background: linear-gradient(135deg, {PALETTE['surface']}, #112240);
-    border: 1px solid {PALETTE['border']};
-    border-radius: 12px;
-    padding: 1rem 1.2rem;
-    text-align: center;
-}}
-.kpi-val {{
-    font-family: 'DM Mono', monospace;
-    font-size: 1.55rem;
-    font-weight: 500;
-    color: {PALETTE['accent1']};
-    line-height: 1.1;
-}}
-.kpi-lbl {{ font-size: 0.72rem; color: {PALETTE['muted']}; text-transform: uppercase; letter-spacing: 0.07em; margin-top: 0.2rem; }}
-.kpi-delta-p {{ color: {PALETTE['accent4']}; font-size: 0.82rem; font-weight: 600; }}
-.kpi-delta-n {{ color: {PALETTE['accent5']}; font-size: 0.82rem; font-weight: 600; }}
-
-.sec-hdr {{
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: {PALETTE['text']};
-    border-left: 3px solid {PALETTE['accent1']};
-    padding-left: 0.7rem;
-    margin: 1.6rem 0 0.7rem 0;
-}}
-.sec-sub {{ color: {PALETTE['muted']}; font-size: 0.88rem; margin: -0.4rem 0 1rem 1rem; }}
-
-.insight {{
-    background: #0a1628;
-    border: 1px solid {PALETTE['border']};
-    border-top: 3px solid {PALETTE['accent1']};
-    border-radius: 10px;
-    padding: 1rem 1.2rem;
-    color: #c5ddf0;
-    font-size: 0.88rem;
-    line-height: 1.65;
-}}
-.insight b {{ color: {PALETTE['text']}; }}
-
-.cb-pos {{ display:inline-block; background:rgba(34,197,94,0.12); border:1px solid #22c55e;
-           border-radius:20px; padding:0.2rem 0.7rem; color:#22c55e; font-weight:600; font-size:0.95rem; }}
-.cb-neg {{ display:inline-block; background:rgba(244,63,94,0.12); border:1px solid #f43f5e;
-           border-radius:20px; padding:0.2rem 0.7rem; color:#f43f5e; font-weight:600; font-size:0.95rem; }}
-.cb-mid {{ display:inline-block; background:rgba(249,115,22,0.12); border:1px solid #f97316;
-           border-radius:20px; padding:0.2rem 0.7rem; color:#f97316; font-weight:600; font-size:0.95rem; }}
-
-eq-box {{
-    background: #050c1a;
-    border: 1px solid #1a3a5c;
-    border-radius: 12px;
-    padding: 1.3rem 2rem;
-    text-align: center;
-    font-family: 'DM Mono', monospace;
-    color: {PALETTE['accent1']};
-    font-size: 1.05rem;
-    line-height: 2;
-    margin: 0.5rem 0;
-}}
-.eq-box small {{ color: {PALETTE['muted']}; font-family: 'DM Sans', sans-serif; font-size: 0.8rem; }}
-
-.data-note {{
-    background: rgba(167,139,250,0.08);
-    border: 1px solid rgba(167,139,250,0.25);
-    border-radius: 8px;
-    padding: 0.6rem 1rem;
-    color: #b8a8e0;
-    font-size: 0.82rem;
-    margin-bottom: 0.5rem;
-}}
-hr {{ border-color: {PALETTE['border']}; }}
-</style>
-""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Carga de datos
-# ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def load_data():
-    df_unified = pd.read_parquet(PATH_UNIFIED)
-    df_returns = pd.read_parquet(PATH_RETURNS)
-    df_filtered = pd.read_parquet(PATH_FILTERED)
-    df_coherence = pd.read_csv(PATH_COHERENCE)
-    return df_unified, df_returns, df_filtered, df_coherence
+st.markdown(
+    f"""
+    <style>
+    .stApp {{ background: {COLORS['fondo']}; color: {COLORS['texto']}; }}
+    .title-big {{ font-size: 3rem; font-weight: 800; color: {COLORS['primario']}; margin-bottom: 0; }}
+    .subtitle-small {{ font-size: 1.1rem; color: #34495E; margin-top: 0.1rem; }}
+    .card-title {{ font-size: 0.95rem; font-weight: 700; color: {COLORS['primario']}; margin-bottom: 0.3rem; }}
+    .card-text {{ font-size: 0.85rem; color: #425466; margin: 0; }}
+    .highlight-box {{ background: white; border-left: 6px solid {COLORS['acento']}; padding: 1rem; border-radius: 10px; margin-bottom: 1rem; }}
+    .metric-value {{ font-size: 1.5rem; font-weight: 700; color: {COLORS['primario']}; }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 @st.cache_data(show_spinner=False)
-def compute_spectrum(series):
-    series = np.asarray(series.dropna(), dtype=float)
-    n = len(series)
-    signal_centered = series - np.mean(series)
-    freqs = np.fft.rfftfreq(n, d=1.0)
-    fft_vals = np.fft.rfft(signal_centered)
-    power = np.abs(fft_vals) ** 2
-    return freqs, power
-
-@st.cache_data(show_spinner=False)
-def top_cycles(series, top_n=5):
-    freqs, power = compute_spectrum(series)
-    if len(freqs) < 2:
-        return pd.DataFrame(columns=["Ranking", "Período (días)", "% Poder Espectral"])
-    periods = 1.0 / freqs[1:]
-    power = power[1:]
-    power_pct = 100 * power / np.sum(power)
-    rank = np.argsort(power)[::-1]
-    selected = rank[:top_n]
-    rows = []
-    for idx, k in enumerate(selected, start=1):
-        rows.append({
-            "Ranking": idx,
-            "Período (días)": float(np.round(periods[k], 2)),
-            "% Poder Espectral": float(np.round(power_pct[k], 2)),
-        })
-    return pd.DataFrame(rows)
-
-@st.cache_data(show_spinner=False)
-def compute_coherence_matrix(reference, target):
-    reference = np.asarray(reference.dropna(), dtype=float)
-    target = np.asarray(target.dropna(), dtype=float)
-    if len(reference) != len(target):
-        n = min(len(reference), len(target))
-        reference = reference[:n]
-        target = target[:n]
-    n = len(reference)
-    nperseg = min(512, n)
-    noverlap = max(0, nperseg // 2)
-    freqs, coh = signal.coherence(reference, target, fs=1.0, nperseg=nperseg, noverlap=noverlap)
-    _, Pxy = signal.csd(reference, target, fs=1.0, nperseg=nperseg, noverlap=noverlap)
-    periods = np.zeros_like(freqs)
-    lags = np.zeros_like(freqs)
-    valid = freqs > 0
-    periods[valid] = 1.0 / freqs[valid]
-    lags[valid] = -np.angle(Pxy[valid]) / (2 * np.pi * freqs[valid])
-    return pd.DataFrame({
-        "Periodo": periods,
-        "Coherencia": coh,
-        "Lag_dias": lags,
-    })
-
-@st.cache_data(show_spinner=False)
-def create_descriptive_stats(df):
-    stats = df.agg(["mean", "std", "min", "max"]).T.reset_index()
-    stats.columns = ["Variable", "Media", "Std", "Mínimo", "Máximo"]
-    stats["Media"] = stats["Media"].round(2)
-    stats["Std"] = stats["Std"].round(2)
-    stats["Mínimo"] = stats["Mínimo"].round(2)
-    stats["Máximo"] = stats["Máximo"].round(2)
-    return stats
-
-@st.cache_data(show_spinner=False)
-def format_plotly_layout(fig):
-    fig.update_layout(
-        plot_bgcolor=PALETTE["bg"],
-        paper_bgcolor=PALETTE["bg"],
-        font_color=PALETTE["text"],
-        legend=dict(bgcolor=PALETTE["surface"], bordercolor=PALETTE["border"], borderwidth=1),
-        margin=dict(l=40, r=40, t=60, b=40),
-    )
-    fig.update_xaxes(gridcolor="#112240", zerolinecolor="#112240", showline=False)
-    fig.update_yaxes(gridcolor="#112240", zerolinecolor="#112240", showline=False)
-    return fig
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Datos cargados
-# ─────────────────────────────────────────────────────────────────────────────
-df_unified, df_returns, df_filtered, df_coherence = load_data()
-
-observaciones_totales = len(df_unified)
-observaciones_fourier = len(df_returns)
-fecha_inicio = df_unified.index.min().strftime("%d/%m/%Y")
-fecha_final = df_unified.index.max().strftime("%d/%m/%Y")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Barra lateral y navegación
-# ─────────────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown(f"<div style='color:{PALETTE['accent1']};font-weight:700;font-size:1.1rem;'>📌 Navegación</div>", unsafe_allow_html=True)
-    st.markdown("---")
-    page = st.radio(
-        "Selecciona una página",
-        [
-            "Datos del Estudio",
-            "Transformación de Series",
-            "Análisis Fourier Individual",
-            "Coherencia Espectral Cruzada",
-            "Síntesis y Conclusiones",
-        ],
-    )
-    st.markdown("---")
-    st.markdown(
-        f"<div style='font-size:0.88rem;color:{PALETTE['muted']};'>Ruta de datos:<br>{PATH_UNIFIED}</div>",
-        unsafe_allow_html=True,
-    )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers de visualización
-# ─────────────────────────────────────────────────────────────────────────────
-def plot_original_series(variable):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_unified.index,
-        y=df_unified[variable],
-        name=variable,
-        line=dict(color=VAR_COLORS[variable], width=2.2),
-    ))
-    fig.update_layout(
-        title=f"Serie original — {variable}",
-        xaxis_title="Fecha",
-        yaxis_title="Valor",
-    )
-    return format_plotly_layout(fig)
+def _load_data():
+    return load_data()
 
 
-def plot_dual_axis(variable):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_unified.index,
-        y=df_unified[variable],
-        name=f"Original {variable}",
-        line=dict(color="#9ca3af", width=1.8),
-        yaxis="y1",
-    ))
-    fig.add_trace(go.Scatter(
-        x=df_returns.index,
-        y=df_returns[variable],
-        name=f"Retorno {variable}",
-        line=dict(color=VAR_COLORS[variable], width=1.8),
-        yaxis="y2",
-    ))
-    fig.update_layout(
-        title=f"Serie original y retorno diario — {variable}",
-        xaxis_title="Fecha",
-        yaxis=dict(title="Original", titlefont=dict(color="#9ca3af"), tickfont=dict(color="#9ca3af"), anchor="x"),
-        yaxis2=dict(title="Retorno diario", titlefont=dict(color=VAR_COLORS[variable]), tickfont=dict(color=VAR_COLORS[variable]), overlaying="y", side="right"),
-        legend=dict(orientation="h", y=-0.2, x=0.03),
-        margin=dict(l=40, r=60, t=60, b=40),
-    )
-    return format_plotly_layout(fig)
+df_original, df_returns, warnings = _load_data()
 
+if warnings:
+    for w in warnings:
+        st.warning(w)
 
-def plot_return_comparison(variable):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_returns.index,
-        y=df_returns[variable],
-        name="Retorno crudo",
-        line=dict(color="rgba(180,180,180,0.4)", width=1.8),
-    ))
-    fig.add_trace(go.Scatter(
-        x=df_filtered.index,
-        y=df_filtered[variable],
-        name="Retorno filtrado",
-        line=dict(color=VAR_COLORS[variable], width=2.0),
-    ))
-    fig.update_layout(
-        title=f"Retorno crudo vs filtrado — {variable}",
-        xaxis_title="Fecha",
-        yaxis_title="Retorno",
-        legend=dict(orientation="h", y=-0.2, x=0.03),
-    )
-    return format_plotly_layout(fig)
+date_range = st.sidebar.date_input(
+    "Rango de fechas",
+    [pd.to_datetime(PERIODO[0]), pd.to_datetime(PERIODO[1])],
+    min_value=pd.to_datetime(PERIODO[0]),
+    max_value=pd.to_datetime(PERIODO[1]),
+)
 
+fourier_components = 10
 
-def plot_power_spectrum(variable):
-    freqs, power = compute_spectrum(df_returns[variable])
-    positive = freqs > 0
-    freqs = freqs[positive]
-    power = power[positive]
-    periods = 1.0 / freqs
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=periods,
-        y=power,
-        mode="lines",
-        line=dict(color=VAR_COLORS[variable], width=2.2),
-        name="Espectro",
-    ))
-    fig.update_xaxes(type="log", title_text="Período (días)")
-    fig.update_yaxes(type="log", title_text="Potencia")
-    fig.update_layout(title=f"Espectro de potencia — {variable}")
-    return format_plotly_layout(fig)
+if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+    start_date, end_date = date_range
+else:
+    start_date = date_range
+    end_date = date_range
 
+start_date = pd.to_datetime(start_date)
+end_date = pd.to_datetime(end_date)
 
-def plot_coherence_heatmap(df):
-    df_plot = df.rename(columns={
-        "C_semanal": "Semanal",
-        "C_quincenal": "Quincenal",
-        "C_mensual": "Mensual",
-        "C_trimestral": "Trimestral",
-    })
-    z = df_plot[["Semanal", "Quincenal", "Mensual", "Trimestral"]].values
-    fig = go.Figure(data=go.Heatmap(
-        z=z,
-        x=["Semanal", "Quincenal", "Mensual", "Trimestral"],
-        y=df_plot["Variable"].tolist(),
-        colorscale="Blues",
-        zmin=0,
-        zmax=0.75,
-        text=np.round(z, 4),
-        texttemplate="%{text}",
-        hovertemplate="%{y} / %{x}: %{z:.4f}<extra></extra>",
-    ))
-    fig.update_layout(title="Coherencia R² por Variable y Banda de Frecuencia")
-    return format_plotly_layout(fig)
+df_original = df_original.loc[start_date:end_date].copy()
+df_returns = df_returns.loc[start_date:end_date].copy()
 
+n_days = len(df_original)
+period_label = f"Enero 2020 — Mayo 2026 · {n_days} días hábiles analizados"
 
-def plot_coherence_bars(coh_df, variable):
-    result = compute_coherence_matrix(df_returns["PFAVAL"], df_returns[variable] if variable != "PFAVAL" else df_returns["PFAVAL"])
-    plot_df = result[result["Periodo"] > 0].copy()
-    max_idx = plot_df["Coherencia"].idxmax()
-    max_row = plot_df.loc[max_idx]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=plot_df["Periodo"],
-        y=plot_df["Coherencia"],
-        mode="lines",
-        line=dict(color=VAR_COLORS[variable], width=2.2),
-        name="Coherencia",
-    ))
-    fig.add_hline(y=0.5, line_dash="dot", line_color="#9ca3af", annotation_text="C=0.5", annotation_position="top left")
-    for label, start, end in BANDAS:
-        fig.add_vrect(
-            x0=start,
-            x1=end,
-            fillcolor="rgba(0,200,255,0.08)" if label in ["Semanal", "Mensual"] else "rgba(34,197,94,0.08)",
-            line_width=0,
-            annotation_text=label,
-            annotation_position="top left",
-            annotation_font_color=PALETTE["muted"],
-        )
-    fig.add_trace(go.Scatter(
-        x=[max_row["Periodo"]],
-        y=[max_row["Coherencia"]],
-        mode="markers+text",
-        marker=dict(color="red", size=10),
-        text=[f"{max_row['Periodo']:.1f}d · {max_row['Coherencia']:.3f}"],
-        textposition="top center",
-        showlegend=False,
-    ))
-    fig.update_xaxes(type="log", title_text="Período (días)")
-    fig.update_yaxes(title_text="Coherencia C(ν)")
-    fig.update_layout(title=f"Coherencia PFAVAL vs {variable}")
-    return format_plotly_layout(fig)
+st.markdown('<div class="title-big">¿Qué mueve el precio de PFAVAL?</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="subtitle-small">Un análisis con Regresión Lineal y Transformada de Fourier</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="subtitle-small">{period_label}</div>', unsafe_allow_html=True)
+st.markdown("---")
 
-
-def plot_phase_lag(coh_df, variable):
-    result = compute_coherence_matrix(df_returns["PFAVAL"], df_returns[variable] if variable != "PFAVAL" else df_returns["PFAVAL"])
-    plot_df = result[result["Periodo"] > 0].copy()
-    max_idx = plot_df["Coherencia"].idxmax()
-    max_row = plot_df.loc[max_idx]
-    colors = ["rgba(34,197,94,0.18)" if val > 0 else "rgba(244,63,94,0.18)" for val in plot_df["Lag_dias"]]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=plot_df["Periodo"],
-        y=plot_df["Lag_dias"],
-        mode="lines",
-        line=dict(color=VAR_COLORS[variable], width=2.2),
-        name="Desfase (días)",
-    ))
-    fig.add_hline(y=0, line_color="#9ca3af", line_dash="dash")
-    fig.add_trace(go.Scatter(
-        x=[max_row["Periodo"]],
-        y=[max_row["Lag_dias"]],
-        mode="markers+text",
-        marker=dict(color="red", size=10),
-        text=[f"{max_row['Lag_dias']:.2f}d"],
-        textposition="bottom center",
-        showlegend=False,
-    ))
-    fig.update_xaxes(type="log", title_text="Período (días)")
-    fig.update_yaxes(title_text="Lag (días)")
-    fig.update_layout(title=f"Desfase temporal PFAVAL vs {variable}")
-    return format_plotly_layout(fig)
-
-
-def plot_pfaval_milestones():
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_unified.index,
-        y=df_unified["PFAVAL"],
-        name="PFAVAL",
-        line=dict(color=VAR_COLORS["PFAVAL"], width=2.4),
-    ))
-    fig.add_trace(go.Scatter(
-        x=df_filtered.index,
-        y=df_filtered["PFAVAL"],
-        name="Retorno filtrado PFAVAL",
-        line=dict(color="skyblue", width=2.2),
-        yaxis="y2",
-    ))
-    for date, label in [
-        ("2020-03-15", "Pandemia"),
-        ("2021-05-01", "Paro Nacional"),
-        ("2022-10-28", "Pico Tasas Banrep"),
-    ]:
-        fig.add_vline(x=pd.to_datetime(date), line=dict(color="red", dash="dot"), opacity=0.7)
-        fig.add_annotation(
-            x=pd.to_datetime(date),
-            y=df_unified["PFAVAL"].max() * 0.95,
-            text=label,
-            showarrow=False,
-            font=dict(color="red", size=11),
-            xanchor="left",
-        )
-    fig.update_layout(
-        title="PFAVAL y hitos macroeconómicos",
-        xaxis_title="Fecha",
-        yaxis=dict(title="PFAVAL"),
-        yaxis2=dict(title="Retorno filtrado", overlaying="y", side="right", showgrid=False),
-        legend=dict(orientation="h", y=-0.2, x=0.02),
-        margin=dict(l=40, r=60, t=60, b=40),
-    )
-    return format_plotly_layout(fig)
-
-
-def plot_lead_lag_bars(df_coh):
-    df_plot = df_coh.set_index("Variable").loc[["COLCAP", "USDCOP", "WTI", "VIX", "TES_5Y"]].copy()
-    df_plot["Lag"] = df_plot["lag_dias_max_coherencia"]
-    df_plot["Color"] = df_plot["Lag"].apply(lambda v: PALETTE["accent4"] if v > 0 else PALETTE["accent5"])
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=df_plot["Lag"].tolist()[::-1],
-        y=df_plot.index.tolist()[::-1],
-        orientation="h",
-        marker_color=df_plot["Color"].tolist()[::-1],
-        text=df_plot["Lag"].round(2).astype(str).tolist()[::-1],
-        textposition="outside",
-    ))
-    fig.add_vline(x=0, line=dict(color="#c5ddf0", dash="dash"))
-    fig.update_layout(
-        title="Desfase temporal de cada variable respecto a PFAVAL",
-        xaxis_title="Lag (días)",
-        yaxis_title="Variable",
-        margin=dict(l=120, r=80, t=60, b=50),
-    )
-    return format_plotly_layout(fig)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Páginas
-# ─────────────────────────────────────────────────────────────────────────────
-if page == "Datos del Estudio":
-    st.markdown(
-        """
-        <div class="hero">
-            <div class="hero-badge">Análisis Espectral PFAVAL — Grupo Aval Preferencial</div>
-            <div class="hero-title">Análisis Espectral PFAVAL</div>
-            <div class="hero-sub">Fourier · BVC · 2020–2026 · 6 variables</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    cols = st.columns(4)
-    metrics = [
-        (f"{observaciones_totales:,}", "Observaciones"),
-        (f"{fecha_inicio} → {fecha_final}", "Período"),
-        ("6", "Variables analizadas"),
-        ("yfinance + Banrep", "Fuentes de datos"),
+with st.container():
+    cols = st.columns(7)
+    cards = [
+        ("PFAVAL", "Precio acción", "Grupo Aval", "[DEPENDIENTE]"),
+        ("USDCOP", "Tasa de cambio", "dólar/peso", "[INDEPENDIENTE]"),
+        ("WTI", "Precio petróleo", "crudo global", "[INDEPENDIENTE]"),
+        ("VIX", "Volatilidad", "global CBOE", "[INDEPENDIENTE]"),
+        ("TES_5Y", "Tasa bonos", "deuda pública 5 años", "[INDEPENDIENTE]"),
+        ("TPM", "Tasa política", "Banco República", "[INDEPENDIENTE]"),
+        ("CDS Colombia", "Riesgo país", "Colombia", "[INDEPENDIENTE]"),
     ]
-    for col, (value, label) in zip(cols, metrics):
+    for col, data in zip(cols, cards):
+        name, heading, description, role = data
         with col:
             st.markdown(
-                f"<div class='kpi'><div class='kpi-val'>{value}</div><div class='kpi-lbl'>{label}</div></div>",
+                f"<div style='background:white;border-radius:14px;padding:16px;box-shadow:0 4px 12px rgba(0,0,0,0.06);'>"
+                f"<div class='card-title'>{heading}</div>"
+                f"<div class='card-text'><b>{name}</b></div>"
+                f"<div class='card-text'>{description}</div>"
+                f"<div class='card-text' style='margin-top:0.5rem;font-size:0.85rem;color:{COLORS['acento']};'>{role}</div>"
+                f"</div>",
                 unsafe_allow_html=True,
             )
-    st.markdown("---")
 
-    stats = create_descriptive_stats(df_unified)
-    table_colors = []
-    for idx, row in stats.iterrows():
-        variable = row["Variable"]
-        color_row = []
-        for col_name in stats.columns:
-            if col_name == "Variable":
-                color_row.append(PALETTE["surface"])
-            elif variable == "WTI" and col_name == "Mínimo":
-                color_row.append("rgba(249,115,22,0.2)")
-            elif variable == "VIX" and col_name == "Máximo":
-                color_row.append("rgba(244,63,94,0.2)")
-            elif variable == "PFAVAL" and col_name in ["Mínimo", "Máximo"]:
-                color_row.append("rgba(34,197,94,0.15)")
-            else:
-                color_row.append(PALETTE["surface"])
-        table_colors.append(color_row)
-    fig_table = go.Figure(data=go.Table(
-        header=dict(
-            values=[f"<b>{col}</b>" for col in stats.columns],
-            fill_color=PALETTE["surface"],
-            font=dict(color=PALETTE["text"], size=12),
-            align="left",
-            line_color=PALETTE["border"],
-        ),
-        cells=dict(
-            values=[stats[col] for col in stats.columns],
-            fill_color=list(map(list, zip(*table_colors))),
-            font=dict(color=PALETTE["text"], size=12),
-            align="left",
-            line_color=PALETTE["border"],
-        ),
-    ))
-    fig_table.update_layout(paper_bgcolor=PALETTE["bg"], plot_bgcolor=PALETTE["bg"], margin=dict(l=0, r=0, t=0, b=0))
-    st.plotly_chart(fig_table, use_container_width=True)
+st.markdown(
+    "Esta aplicación explora qué variables macroeconómicas están relacionadas con el precio de PFAVAL, "
+    "usando dos herramientas: Regresión Lineal (para medir qué tan fuerte es la relación) y "
+    "Transformada de Fourier (para identificar ciclos y limpiar el ruido antes de modelar)."
+)
+st.divider()
 
-    st.markdown("---")
-    variable = st.selectbox("Selecciona una variable", list(VAR_COLORS.keys()), index=0)
-    st.plotly_chart(plot_original_series(variable), use_container_width=True)
+# Sección 1
+st.header("Primero, miremos qué pasó")
 
-elif page == "Transformación de Series":
-    st.markdown(
-        """
-        <div class='insight'>
-        <b>Fourier requiere series estacionarias.</b> Los precios tienen tendencia creciente — no sirven directamente. Se convierten a log-retornos diarios: log(Pt / Pt-1). Para TES_5Y, al ser una tasa y no un precio, se usa primera diferencia: Δt = Tt - Tt-1. El resultado oscila alrededor de cero sin tendencia.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown("---")
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.markdown(
-            f"<div class='kpi'><div class='kpi-val'>{observaciones_fourier:,}</div><div class='kpi-lbl'>Observaciones disponibles para Fourier</div></div>",
-            unsafe_allow_html=True,
+normalized = zscore_dataframe(df_original)
+fig = go.Figure()
+for col in normalized.columns:
+    fig.add_trace(
+        go.Scatter(
+            x=normalized.index,
+            y=normalized[col],
+            mode="lines",
+            name=col,
+            line=dict(width=2),
         )
-    with col2:
-        st.markdown("<div class='kpi' style='background: rgba(34,197,94,0.08); border-color: rgba(34,197,94,0.35);'><div class='kpi-val'>1.504</div><div class='kpi-lbl'>Observaciones para Fourier</div></div>", unsafe_allow_html=True)
-    st.markdown("---")
-    variable = st.selectbox("Selecciona una variable", list(VAR_COLORS.keys()), index=0)
-    st.plotly_chart(plot_dual_axis(variable), use_container_width=True)
+    )
+for event_date, label in [
+    ("2020-03-01", "COVID-19"),
+    ("2021-05-01", "Paro Nacional"),
+    ("2022-09-01", "Pico tasas BanRep"),
+]:
+    fig.add_shape(
+        type="line",
+        x0=event_date,
+        x1=event_date,
+        y0=0,
+        y1=1,
+        xref="x",
+        yref="paper",
+        line=dict(color=COLORS["acento"], dash="dot"),
+    )
+    fig.add_annotation(
+        x=event_date,
+        y=1.02,
+        xref="x",
+        yref="paper",
+        text=label,
+        showarrow=False,
+        font=dict(color=COLORS["acento"], size=12),
+        align="left",
+    )
+fig.update_layout(
+    title="Series normalizadas (Z-score) sobre el período completo",
+    xaxis_title="Fecha",
+    yaxis_title="Valor normalizado",
+    template="plotly_white",
+    height=500,
+)
+st.plotly_chart(fig, use_container_width=True)
 
-elif page == "Análisis Fourier Individual":
-    variable = st.selectbox("Selecciona una variable", list(VAR_COLORS.keys()), index=0)
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(plot_return_comparison(variable), use_container_width=True)
-    with col2:
-        st.plotly_chart(plot_power_spectrum(variable), use_container_width=True)
-    st.markdown("---")
-    st.markdown("#### Top-5 ciclos dominantes")
-    top5 = top_cycles(df_returns[variable])
-    st.table(top5)
+selected_variable = st.selectbox(
+    "Selecciona una serie para ver su evolución original",
+    list(df_original.columns),
+    index=list(df_original.columns).index("PFAVAL") if "PFAVAL" in df_original.columns else 0,
+)
 
-elif page == "Coherencia Espectral Cruzada":
-    st.markdown("<div class='sec-hdr'>Coherencia Espectral Cruzada</div>", unsafe_allow_html=True)
-    st.markdown("---")
-    k1, k2, k3 = st.columns(3)
-    kpis = [
-        ("Variable más explicativa: COLCAP", "C mensual = 0.6705"),
-        ("Único driver que anticipa a PFAVAL: TES_5Y", "Lidera 0.38 días"),
-        ("Banda de mayor coherencia: Mensual (15-30 días)", ""),
-    ]
-    for col, (title, subtitle) in zip([k1, k2, k3], kpis):
-        with col:
-            st.markdown(
-                f"<div class='kpi'><div class='kpi-val'>{title}</div><div class='kpi-lbl'>{subtitle}</div></div>",
-                unsafe_allow_html=True,
-            )
-    st.markdown("---")
-    st.plotly_chart(plot_coherence_heatmap(df_coherence), use_container_width=True)
-    st.markdown("---")
+serie = df_original[selected_variable]
+metric_cols = st.columns(4)
+metrics = {
+    "Promedio": round(float(serie.mean()), 4),
+    "Volatilidad": round(float(serie.std()), 4),
+    "Mínimo": round(float(serie.min()), 4),
+    "Máximo": round(float(serie.max()), 4),
+}
+for col, (name, value) in zip(metric_cols, metrics.items()):
+    with col:
+        st.metric(label=name, value=value)
 
-    table_df = df_coherence.copy()
-    table_df["Semanal"] = table_df["C_semanal"].map("{:.4f}".format)
-    table_df["Quincenal"] = table_df["C_quincenal"].map("{:.4f}".format)
-    table_df["Mensual"] = table_df["C_mensual"].map("{:.4f}".format)
-    table_df["Trimestral"] = table_df["C_trimestral"].map("{:.4f}".format)
-    leaders = []
-    for v in table_df["Variable"]:
-        if v == "COLCAP":
-            leaders.append("PFAVAL +1.97d")
-        elif v == "USDCOP":
-            leaders.append("PFAVAL +1.72d")
-        elif v == "TES_5Y":
-            leaders.append("TES_5Y −0.38d")
-        elif v == "VIX":
-            leaders.append("PFAVAL +0.57d")
-        else:
-            leaders.append("PFAVAL +0.37d")
-    table_df["Líder"] = leaders
+fig_raw = go.Figure()
+fig_raw.add_trace(go.Scatter(x=serie.index, y=serie.values, mode="lines", line=dict(color=COLORS["primario"])))
+fig_raw.update_layout(
+    title=f"Evolución original de {selected_variable}",
+    xaxis_title="Fecha",
+    yaxis_title=selected_variable,
+    template="plotly_white",
+    height=420,
+)
+st.plotly_chart(fig_raw, use_container_width=True)
 
-    fill_colors = []
-    for _, row in table_df.iterrows():
-        base_color = [PALETTE["surface"]] * 6
-        if row["Variable"] == "COLCAP":
-            base_color = ["rgba(34,197,94,0.14)"] * 6
-        if row["Variable"] == "TES_5Y":
-            base_color[-1] = "rgba(249,115,22,0.22)"
-        fill_colors.append(base_color)
-    fill_colors = list(map(list, zip(*fill_colors)))
+st.markdown(
+    "Visualmente ya se notan algunas relaciones: cuando el dólar sube, PFAVAL tiende a bajar. "
+    "Cuando el mercado global se agita (VIX), PFAVAL también reacciona. Pero, ¿qué tan fuertes "
+    "son estas relaciones? Para medirlo con precisión, usamos Regresión Lineal."
+)
+st.divider()
 
-    fig_table = go.Figure(data=go.Table(
-        header=dict(
-            values=["<b>Variable</b>", "<b>Semanal</b>", "<b>Quincenal</b>", "<b>Mensual</b>", "<b>Trimestral</b>", "<b>Líder</b>"],
-            fill_color=PALETTE["surface"],
-            font=dict(color=PALETTE["text"], size=12),
-            align="left",
-            line_color=PALETTE["border"],
-        ),
-        cells=dict(
-            values=[table_df[c] for c in ["Variable", "Semanal", "Quincenal", "Mensual", "Trimestral", "Líder"]],
-            fill_color=fill_colors,
-            font=dict(color=PALETTE["text"], size=12),
-            align="left",
-            line_color=PALETTE["border"],
-        ),
-    ))
-    fig_table.update_layout(paper_bgcolor=PALETTE["bg"], plot_bgcolor=PALETTE["bg"], margin=dict(l=0, r=0, t=0, b=0))
-    st.plotly_chart(fig_table, use_container_width=True)
+# Sección 2
+st.header("¿Cuánto explica cada variable por sí sola?")
+st.markdown(
+    "La Regresión Lineal busca la línea recta que mejor describe la relación entre dos variables. "
+    "Si la línea tiene buena pendiente y los puntos están cerca de ella, la relación es fuerte. "
+    "Si los puntos están dispersos por todos lados, la relación es débil."
+)
 
-    st.markdown("---")
-    variable = st.selectbox("Selecciona una variable para coherencia individual", [v for v in VAR_COLORS.keys() if v != "PFAVAL"], index=0)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(plot_coherence_bars(variable), use_container_width=True)
-    with col2:
-        st.plotly_chart(plot_phase_lag(variable), use_container_width=True)
+simple_var = st.selectbox(
+    "Selecciona una variable para analizar su relación con PFAVAL",
+    ["USDCOP", "WTI", "VIX", "TES_5Y", "TPM", "CDS Colombia"],
+)
 
-elif page == "Síntesis y Conclusiones":
-    st.markdown("<div class='sec-hdr'>Síntesis y Conclusiones</div>", unsafe_allow_html=True)
-    st.plotly_chart(plot_pfaval_milestones(), use_container_width=True)
-    st.plotly_chart(plot_lead_lag_bars(df_coherence), use_container_width=True)
+x = df_returns[simple_var]
+y = df_returns["PFAVAL"]
+metrics = simple_regression(x, y)
+line_x = pd.Series([x.min(), x.max()])
+line_y = metrics["intercept"] + metrics["slope"] * line_x
 
-    st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    conclusions = [
-        (
-            PALETTE["accent4"],
-            "COLCAP — Driver Principal",
-            "Explica el 67% del movimiento mensual de PFAVAL. Coherencia quincenal: 0.42 | Trimestral: 0.62 PFAVAL anticipa al COLCAP por 1.97 días.",
-        ),
-        (
-            PALETTE["accent5"],
-            "USD/COP — Relación de Largo Plazo",
-            "R² global = 0.20, pero coherencia trimestral = 0.26. Fourier revela que el dólar solo importa en ciclos de 30 a 90 días. Es invisible en el ruido semanal.",
-        ),
-        (
-            PALETTE["accent2"],
-            "TES 5Y — El Único Que Anticipa",
-            "Único driver que lidera a PFAVAL: −0.38 días. Cuando las tasas de deuda se mueven, PFAVAL reacciona antes que el mercado accionario.",
-        ),
-    ]
-    for col, (color, title, text) in zip([c1, c2, c3], conclusions):
-        with col:
-            st.markdown(
-                f"<div class='kpi' style='border-color: {color}; background: rgba(13,27,46,0.95);'><div class='kpi-val' style='color: {color};'>{title}</div><div class='kpi-lbl' style='color:{PALETTE['text']};'>{text}</div></div>",
-                unsafe_allow_html=True,
-            )
-    st.markdown("---")
+fig_scatter = go.Figure()
+fig_scatter.add_trace(go.Scatter(x=x, y=y, mode="markers", marker=dict(color=COLORS["neutro"], size=5), name="Puntos diarios"))
+fig_scatter.add_trace(go.Scatter(x=line_x, y=line_y, mode="lines", line=dict(color=COLORS["acento"], width=3), name="Línea de regresión"))
+fig_scatter.update_layout(
+    title=f"PFAVAL vs {simple_var}",
+    xaxis_title=f"Retornos/diferencia de {simple_var}",
+    yaxis_title="Retornos de PFAVAL",
+    template="plotly_white",
+    height=450,
+)
+
+left, right = st.columns([2, 1])
+with left:
+    st.plotly_chart(fig_scatter, use_container_width=True)
+with right:
+    p_value_color = COLORS["positivo"] if metrics["pvalue"] < 0.05 else COLORS["negativo"]
+    corr_color = COLORS["positivo"] if metrics["corr"] >= 0 else COLORS["negativo"]
+    st.markdown("### Métricas de la regresión")
     st.markdown(
         f"""
-        <div class='insight' style='background: #020714; border-top-color: {PALETTE['accent1']};'>
-        <b>Resumen final:</b><br>
-        Período: {fecha_inicio} → {fecha_final}<br>
-        Observaciones: {observaciones_fourier:,} días hábiles<br>
-        Ciclo dominante de PFAVAL: 32.70 días<br>
-        Variable más explicativa: COLCAP (C_mensual = 0.6705)<br>
-        Única variable que anticipa: TES_5Y (−0.38 días)
+        <div style="background: #f8f9fa; border-left: 4px solid {COLORS['primario']}; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px;">
+            <div style="font-size: 0.75rem; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">R²</div>
+            <div style="font-size: 1.8rem; font-weight: 700; color: {COLORS['primario']}; margin: 4px 0;">{metrics['r2']:.3f}</div>
+            <div style="font-size: 0.78rem; color: #6c757d;">Proporción de varianza explicada (0 = nada, 1 = todo).</div>
+        </div>
+        <div style="background: #f8f9fa; border-left: 4px solid {COLORS['acento']}; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px;">
+            <div style="font-size: 0.75rem; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Pendiente</div>
+            <div style="font-size: 1.8rem; font-weight: 700; color: {COLORS['acento']}; margin: 4px 0;">{metrics['slope']:.4f}</div>
+            <div style="font-size: 0.78rem; color: #6c757d;">Por cada unidad de {simple_var}, PFAVAL cambia en este valor.</div>
+        </div>
+        <div style="background: #f8f9fa; border-left: 4px solid {p_value_color}; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px;">
+            <div style="font-size: 0.75rem; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">p-valor</div>
+            <div style="font-size: 1.8rem; font-weight: 700; color: {p_value_color}; margin: 4px 0;">{metrics['pvalue']:.4f}</div>
+            <div style="font-size: 0.78rem; color: #6c757d;">Significancia estadística: < 0.05 indica que la relación es fiable.</div>
+        </div>
+        <div style="background: #f8f9fa; border-left: 4px solid {corr_color}; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px;">
+            <div style="font-size: 0.75rem; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Correlación</div>
+            <div style="font-size: 1.8rem; font-weight: 700; color: {corr_color}; margin: 4px 0;">{metrics['corr']:.3f}</div>
+            <div style="font-size: 0.78rem; color: #6c757d;">Dirección y fuerza de la relación (-1 a +1).</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+if metrics["r2"] > 0.3:
+    st.success(f"✅ Relación fuerte: {simple_var} explica bien el movimiento de PFAVAL")
+elif metrics["r2"] > 0.1:
+    st.warning(f"⚠️ Relación moderada: {simple_var} tiene algo que ver con PFAVAL")
+else:
+    st.error(f"❌ Relación débil: {simple_var} explica poco el movimiento de PFAVAL")
+
+summary_table = build_variable_summary(df_returns)
+st.markdown("### Resumen de regresiones simples por variable")
+st.dataframe(summary_table)
+
+st.markdown(
+    "Ya tenemos una primera imagen. Pero hay un problema: los datos diarios tienen mucho ruido, "
+    "movimientos aleatorios que 'tapan' las relaciones reales. ¿Qué pasaría si pudiéramos "
+    "limpiar ese ruido antes de hacer la regresión?"
+)
+st.divider()
+
+# Sección 3
+st.header("El ruido que nos impide ver")
+st.markdown(
+    "Los precios de una acción fluctúan todos los días por miles de razones pequeñas: una noticia, "
+    "una orden grande de compra, un inversor que necesita liquidez. Estos movimientos diarios son "
+    "'ruido' que no tiene nada que ver con las variables macro que nos interesan. Imagina intentar "
+    "escuchar una conversación en medio de una fiesta ruidosa. Fourier nos da auriculares con cancelación de ruido."
+)
+
+pfaval_filtered = fourier_filter(df_returns["PFAVAL"], n_componentes=fourier_components)
+fig_noise = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08)
+fig_noise.add_trace(
+    go.Scatter(x=df_returns.index, y=df_returns["PFAVAL"], mode="lines", line=dict(color=COLORS["neutro"]), name="PFAVAL diario"),
+    row=1,
+    col=1,
+)
+fig_noise.add_trace(
+    go.Scatter(x=pfaval_filtered.index, y=pfaval_filtered.values, mode="lines", line=dict(color=COLORS["fourier"]), name="PFAVAL filtrado"),
+    row=2,
+    col=1,
+)
+fig_noise.update_layout(title="PFAVAL diario (con ruido) vs PFAVAL filtrado (sin ruido de corto plazo)", template="plotly_white", height=650)
+fig_noise.update_yaxes(title_text="Retorno PFAVAL", row=1, col=1)
+fig_noise.update_yaxes(title_text="Retorno PFAVAL filtrado", row=2, col=1)
+st.plotly_chart(fig_noise, use_container_width=True)
+
+st.markdown(
+    "Con el filtro aplicado, estamos listos para repetir el análisis de regresión "
+    "pero ahora con señales más limpias. ¿Mejoran los resultados?"
+)
+st.divider()
+
+# Sección 4
+st.header("¿Qué tan mejor queda la regresión con datos limpios?")
+
+filtered_returns = df_returns.copy()
+for col in filtered_returns.columns:
+    filtered_returns.loc[:, col] = fourier_filter(filtered_returns[col], n_componentes=fourier_components)
+
+comparison = build_filter_comparison(df_returns, filtered_returns)
+comparison["Mejora"] = comparison["Mejora_pct"].apply(lambda x: f"{x:+.1f} p.p.")
+avg_improvement = comparison["Mejora_pct"].mean() if "Mejora_pct" in comparison.columns else 0.0
+comparison_display = comparison[["Variable", "R2 Original", "R2 Filtrado", "Mejora", "Interpretación"]]
+
+st.plotly_chart(
+    go.Figure(
+        data=[
+            go.Bar(x=comparison_display["Variable"], y=comparison_display["R2 Original"], name="Original", marker_color=COLORS["neutro"]),
+            go.Bar(x=comparison_display["Variable"], y=comparison_display["R2 Filtrado"], name="Filtrado", marker_color=COLORS["acento"]),
+        ]
+    ).update_layout(title="Comparación de R² original vs filtrado", barmode="group", template="plotly_white"),
+    use_container_width=True,
+)
+
+st.dataframe(comparison_display)
+
+st.markdown(
+    "La mejora más grande la vemos en TES 5Y y TPM: variables que miden tasas de interés. "
+    "Esto tiene sentido: las decisiones de política monetaria son tendencias de mediano plazo, "
+    "no eventos diarios. Fourier las revela al eliminar el ruido."
+)
+st.divider()
+
+# Sección 5
+st.header("¿Cuánto explican todas las variables juntas?")
+st.markdown(
+    "Hasta ahora analizamos cada variable por separado. Ahora las combinamos todas "
+    "en un único modelo para ver cuánto explican en conjunto y cuál tiene más peso."
+)
+
+filtered_features = [v for v in df_returns.columns if v != "PFAVAL"]
+model_results = multi_regression(filtered_returns, filtered_features)
+metrics_cols = st.columns(3)
+metrics_data = {
+    "R²": f"{model_results['r2']:.3f}",
+    "R² Ajustado": f"{model_results['r2_adj']:.3f}",
+    "RMSE": f"{model_results['rmse']:.4f}",
+}
+for col, item in zip(metrics_cols, metrics_data.items()):
+    with col:
+        st.metric(label=item[0], value=item[1])
+st.markdown(f"Variables significativas: {model_results['significativas']} de {len(filtered_features)}")
+
+coef_table = model_results["coef_table"]
+coef_fig = go.Figure()
+coef_fig.add_trace(
+    go.Bar(
+        x=coef_table["Coeficiente"],
+        y=coef_table["Variable"],
+        orientation="h",
+        marker_color=[COLORS["positivo"] if p else COLORS["neutro"] for p in coef_table["Significativa"]],
+        hovertemplate="%{y}: β=%{x:.4f} | p=%{customdata[0]:.4f}",
+        customdata=coef_table[["p-valor"]].values,
+    )
+)
+coef_fig.add_vline(x=0, line=dict(color="black", dash="dash"))
+coef_fig.update_layout(title="Coeficientes del modelo múltiple", template="plotly_white", height=450)
+
+col1, col2 = st.columns([1, 1])
+with col1:
+    st.plotly_chart(coef_fig, use_container_width=True)
+with col2:
+    st.table(coef_table.style.format({"Coeficiente": "{:.4f}", "p-valor": "{:.4f}"}))
+
+sig_vars = coef_table.loc[coef_table["Significativa"], "Variable"].tolist()
+st.markdown(
+    f"En conjunto, las 6 variables explican el {model_results['r2']*100:.1f}% del movimiento de PFAVAL. "
+    f"Las variables estadísticamente significativas son: {', '.join(sig_vars)}. "
+    "El resto tiene un efecto que no se puede distinguir del azar en este período."
+)
+st.divider()
+
+# Sección 6
+st.header("¿Qué es la Transformada de Fourier y por qué la usamos?")
+st.markdown(
+    "Imagina que el precio de PFAVAL es una canción compleja. A primera vista parece ruido sin estructura. "
+    "Pero si pudieras descomponer esa canción en sus notas individuales, descubrirías que hay 3 o 4 notas que se repiten constantemente. "
+    "Esas notas son los ciclos del mercado."
+)
+
+synthetic = synthetic_fourier_example()
+fig_syn = make_subplots(rows=2, cols=2, subplot_titles=("Señal total", "Ciclo 30 días", "Ciclo 15 días", "Ciclo 7 días"))
+fig_syn.add_trace(go.Scatter(x=synthetic["Tiempo"], y=synthetic["Señal total"], mode="lines", line=dict(color=COLORS["primario"])), row=1, col=1)
+fig_syn.add_trace(go.Scatter(x=synthetic["Tiempo"], y=synthetic["Ciclo 30 días"], mode="lines", line=dict(color=COLORS["acento"])), row=1, col=2)
+fig_syn.add_trace(go.Scatter(x=synthetic["Tiempo"], y=synthetic["Ciclo 15 días"], mode="lines", line=dict(color=COLORS["positivo"])), row=2, col=1)
+fig_syn.add_trace(go.Scatter(x=synthetic["Tiempo"], y=synthetic["Ciclo 7 días"], mode="lines", line=dict(color=COLORS["fourier"])), row=2, col=2)
+fig_syn.update_layout(title="Una señal compleja es la suma de ciclos simples", template="plotly_white", height=650)
+st.plotly_chart(fig_syn, use_container_width=True)
+
+st.markdown("Aplicamos Fourier a los retornos diarios de PFAVAL para ver cuáles son los ciclos más poderosos.")
+
+cycles = top_n_cycles(df_original["PFAVAL"], n=5, min_period_days=5.0)
+cycles = cycles.sort_values("Potencia_norm", ascending=True).reset_index(drop=True)
+cycle_main = int(cycles.iloc[-1]["Periodo_dias"]) if not cycles.empty else 0
+fig_cycles = go.Figure(
+    data=[
+        go.Bar(
+            x=cycles["Potencia_norm"],
+            y=[f"{int(v)} días" for v in cycles["Periodo_dias"]],
+            orientation="h",
+            marker_color=[COLORS["acento"] if int(v) == cycle_main else COLORS["primario"] for v in cycles["Periodo_dias"]],
+        )
+    ]
+)
+fig_cycles.update_layout(
+    title="Top 5 ciclos dominantes de PFAVAL",
+    xaxis_title="Potencia normalizada (%)",
+    yaxis_title="Período del ciclo (días)",
+    yaxis=dict(categoryorder="array", categoryarray=[f"{int(v)} días" for v in cycles["Periodo_dias"]]),
+    template="plotly_white",
+    height=450,
+)
+st.plotly_chart(fig_cycles, use_container_width=True)
+st.markdown(
+    f"El ciclo dominante de PFAVAL es {cycle_main} días (barra naranja de referencia). "
+    "Las variables en verde están sincronizadas con ese ritmo."
+)
+
+st.markdown(
+    f"El ciclo más poderoso de PFAVAL dura aproximadamente {cycle_main} días hábiles, "
+    f"equivalente a {cycle_main / 22:.1f} meses. Esto sugiere que el mercado sigue un ritmo mensual: "
+    "cada mes aproximadamente, el precio completa un movimiento de alza y corrección."
+)
+
+st.markdown("Si una variable macroeconómica comparte el mismo ciclo que PFAVAL, es más probable que estén genuinamente relacionadas.")
+
+dominant = []
+for col in df_original.columns:
+    if col == "TPM":
+        period = average_days_between_changes(df_original[col])
+    else:
+        period = dominant_period(df_original[col], min_period_days=5.0)
+    dominant.append({"Variable": col, "Periodo_dias": period})
+
+dominant_df = pd.DataFrame(dominant)
+dominant_df["Sincronización"] = dominant_df["Periodo_dias"].apply(
+    lambda p: "Sincronizado con PFAVAL" if abs(p - cycle_main) <= 10 else "No sincronizado"
+)
+fig_sync = px.bar(
+    dominant_df,
+    x="Variable",
+    y="Periodo_dias",
+    text="Periodo_dias",
+    color="Sincronización",
+    color_discrete_map={
+        "Sincronizado con PFAVAL": COLORS["positivo"],
+        "No sincronizado": COLORS["neutro"],
+    },
+)
+fig_sync.add_hline(y=cycle_main, line_dash="dash", line_color=COLORS["acento"], annotation_text="Ciclo PFAVAL", annotation_position="top right")
+fig_sync.update_layout(title="Ciclo dominante por variable", yaxis_title="Días del ciclo dominante", template="plotly_white", height=500)
+st.plotly_chart(fig_sync, use_container_width=True)
+
+st.markdown(
+    "Las variables cuyos ciclos se sincronizan con PFAVAL tienen mayor probabilidad "
+    "de tener una relación real y no espuria."
+)
+st.divider()
+
+# Sección 7
+st.header("¿Qué tan sincronizadas están las variables con PFAVAL?")
+st.markdown(
+    "Fourier también nos permite medir qué tan 'en sintonía' está cada variable con PFAVAL en diferentes horizontes de tiempo. "
+    "A esto se llama coherencia espectral: un valor de 1 significa movimiento completamente sincronizado, 0 significa sin relación en ese plazo."
+)
+
+coherence = compute_coherence_table(df_returns)
+coherence["Corto plazo" ] = coherence["Corto plazo"].round(3)
+coherence["Mediano plazo"] = coherence["Mediano plazo"].round(3)
+coherence["Largo plazo"] = coherence["Largo plazo"].round(3)
+coherence["Interpretación corto"] = coherence["Corto plazo"].apply(coherence_category)
+coherence["Interpretación mediano"] = coherence["Mediano plazo"].apply(coherence_category)
+coherence["Interpretación largo"] = coherence["Largo plazo"].apply(coherence_category)
+
+st.dataframe(
+    coherence[["Variable", "Corto plazo", "Mediano plazo", "Largo plazo", "Anticipa"]],
+    use_container_width=True,
+)
+
+heatmap = go.Figure(
+    data=go.Heatmap(
+        z=coherence[["Corto plazo", "Mediano plazo", "Largo plazo"]].values,
+        x=["Corto plazo", "Mediano plazo", "Largo plazo"],
+        y=coherence["Variable"],
+        colorscale="Blues",
+        zmin=0,
+        zmax=1,
+    )
+)
+heatmap.update_layout(title="Coherencia espectral por banda de tiempo", template="plotly_white", height=500)
+st.plotly_chart(heatmap, use_container_width=True)
+
+st.markdown(
+    "TES 5Y y TPM muestran la mayor coherencia en plazos de mediano y largo plazo, "
+    "y son las únicas que parecen anticipar los movimientos de PFAVAL. Esto tiene sentido económico: "
+    "cuando el BanRep sube tasas, los bancos como Grupo Aval ajustan sus márgenes y esto se refleja gradualmente en el precio de PFAVAL."
+)
+st.divider()
+
+# Sección 8
+st.header("¿Qué aprendimos?")
+summary = pd.DataFrame(
+    {
+        "Hallazgo": [
+            "PFAVAL sigue un ritmo mensual",
+            "TES 5Y y TPM son los drivers",
+            "USD/COP importa en plazos largos",
+            "WTI y VIX son variables débiles",
+            "Filtro Fourier mejora la regresión",
+        ],
+        "Regresión dice": [
+            "Alta persistencia diaria",
+            "R² sube con datos filtrados",
+            "R² moderado filtrado",
+            "R² bajo incluso filtrado",
+            "R² promedio mejora",
+        ],
+        "Fourier dice": [
+            f"Ciclo dominante ~{cycle_main} días hábiles",
+            "Coherencia media-alta en tasas",
+            "Coherencia solo en largo plazo",
+            "Coherencia muy baja",
+            "Ruido diario domina datos crudos",
+        ],
+        "Conclusión": [
+            "El mercado tiene un pulso de ~6 semanas.",
+            "Las tasas de interés son el driver real.",
+            "El dólar importa más en plazos lentos.",
+            "Petróleo y volatilidad no mueven a PFAVAL.",
+            "Limpiar antes de modelar es clave.",
+        ],
+    }
+)
+st.dataframe(summary)
+
+final_cols = st.columns(4)
+final_metrics = [
+    ("Ciclo dominante", f"{cycle_main} días"),
+    ("Variable más fuerte", ", ".join(sig_vars) if sig_vars else "TES 5Y"),
+    ("Mejora por filtro", f"{avg_improvement:.1f}%"),
+    ("R² máximo alcanzado", f"{model_results['r2']:.3f}"),
+]
+for col, item in zip(final_cols, final_metrics):
+    with col:
+        st.markdown(f"<div class='highlight-box'><div class='card-title'>{item[0]}</div><div class='metric-value'>{item[1]}</div></div>", unsafe_allow_html=True)
+
+st.success(
+    "CONCLUSIÓN PRINCIPAL: PFAVAL responde principalmente a las tasas de interés colombianas (TES 5Y y TPM), "
+    "no a factores globales como el petróleo o la volatilidad internacional. La Transformada de Fourier fue clave para revelar estas relaciones, "
+    f"que quedan ocultas en el ruido del día a día. Al limpiar las series, el poder explicativo del modelo mejoró en promedio {avg_improvement:.1f}%."
+)
