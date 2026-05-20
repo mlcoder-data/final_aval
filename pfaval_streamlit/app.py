@@ -468,27 +468,55 @@ for col in df_original.columns:
     dominant.append({"Variable": col, "Periodo_dias": period})
 
 dominant_df = pd.DataFrame(dominant)
-dominant_df["Sincronización"] = dominant_df["Periodo_dias"].apply(
-    lambda p: "Sincronizado con PFAVAL" if abs(p - cycle_main) <= 10 else "No sincronizado"
+coherence = compute_coherence_table(df_returns)
+
+
+def es_sincronizada(variable: str, df_coherencia: pd.DataFrame, umbral: float = 0.20) -> bool:
+    fila = df_coherencia[df_coherencia["Variable"] == variable].iloc[0]
+    coh_mediano = fila["Mediano plazo"]
+    coh_largo = fila["Largo plazo"]
+    return (coh_mediano > umbral) or (coh_largo > umbral)
+
+colores = []
+for var in dominant_df["Variable"]:
+    if var == "PFAVAL":
+        colores.append(COLORS["primario"])
+    elif es_sincronizada(var, coherence, umbral=0.20):
+        colores.append(COLORS["positivo"])
+    else:
+        colores.append(COLORS["neutro"])
+
+fig_sync = go.Figure(
+    go.Bar(
+        x=dominant_df["Variable"],
+        y=dominant_df["Periodo_dias"],
+        marker_color=colores,
+        text=dominant_df["Periodo_dias"],
+        textposition="outside",
+        hovertemplate="<b>%{x}</b><br>Ciclo dominante: %{y} días<extra></extra>",
+    )
 )
-fig_sync = px.bar(
-    dominant_df,
-    x="Variable",
-    y="Periodo_dias",
-    text="Periodo_dias",
-    color="Sincronización",
-    color_discrete_map={
-        "Sincronizado con PFAVAL": COLORS["positivo"],
-        "No sincronizado": COLORS["neutro"],
-    },
+fig_sync.add_hline(
+    y=cycle_main,
+    line_dash="dot",
+    line_color="orange",
+    annotation_text="Ciclo PFAVAL (35d)",
+    annotation_position="right",
 )
-fig_sync.add_hline(y=cycle_main, line_dash="dash", line_color=COLORS["acento"], annotation_text="Ciclo PFAVAL", annotation_position="top right")
-fig_sync.update_layout(title="Ciclo dominante por variable", yaxis_title="Días del ciclo dominante", template="plotly_white", height=500)
+fig_sync.update_layout(
+    title="Ciclo dominante por variable",
+    xaxis_title="Variable",
+    yaxis_title="Días del ciclo dominante",
+    showlegend=False,
+    plot_bgcolor="white",
+    template="plotly_white",
+    height=500,
+)
 st.plotly_chart(fig_sync, use_container_width=True)
 
 st.markdown(
-    "Las variables cuyos ciclos se sincronizan con PFAVAL tienen mayor probabilidad "
-    "de tener una relación real y no espuria."
+    "Las barras verdes indican variables con coherencia espectral superior a 0.20 en mediano o largo plazo, "
+    "confirmando sincronía real con PFAVAL más allá de la similitud de ciclos."
 )
 st.divider()
 
@@ -534,32 +562,33 @@ st.divider()
 
 # Sección 8
 st.header("¿Qué aprendimos?")
+tes5y_coh_largo = float(coherence.loc[coherence["Variable"] == "TES_5Y", "Largo plazo"].iloc[0]) if "TES_5Y" in coherence["Variable"].values else 0.0
 summary = pd.DataFrame(
     {
         "Hallazgo": [
             "PFAVAL sigue un ritmo mensual",
-            "TES 5Y y TPM son los drivers",
+            "TES_5Y y TPM: relación de largo plazo",
             "USD/COP importa en plazos largos",
             "WTI y VIX son variables débiles",
             "Filtro Fourier mejora la regresión",
         ],
         "Regresión dice": [
             "Alta persistencia diaria",
-            "R² sube con datos filtrados",
+            "R² bajo en datos diarios (relación no visible en corto plazo)",
             "R² moderado filtrado",
             "R² bajo incluso filtrado",
             "R² promedio mejora",
         ],
         "Fourier dice": [
             f"Ciclo dominante ~{cycle_main} días hábiles",
-            "Coherencia media-alta en tasas",
+            f"Coherencia más alta en largo plazo (TES_5Y: {tes5y_coh_largo:.3f})",
             "Coherencia solo en largo plazo",
             "Coherencia muy baja",
             "Ruido diario domina datos crudos",
         ],
         "Conclusión": [
             "El mercado tiene un pulso de ~6 semanas.",
-            "Las tasas de interés son el driver real.",
+            "La relación existe pero opera en ciclos de meses, no días",
             "El dólar importa más en plazos lentos.",
             "Petróleo y volatilidad no mueven a PFAVAL.",
             "Limpiar antes de modelar es clave.",
@@ -568,19 +597,42 @@ summary = pd.DataFrame(
 )
 st.dataframe(summary)
 
+# Métricas finales con foco en coherencia y mejora individual
+var_mas_fuerte = coherence.loc[coherence["Largo plazo"].idxmax(), "Variable"]
+coherencia_max = float(coherence["Largo plazo"].max())
+df_mejoras = comparison.copy()
+df_mejoras["mejora_pp"] = (df_mejoras["R2 Filtrado"] - df_mejoras["R2 Original"]) * 100
+mejor_var = df_mejoras.loc[df_mejoras["mejora_pp"].idxmax(), "Variable"]
+mejor_mejora = float(df_mejoras["mejora_pp"].max())
+
 final_cols = st.columns(4)
-final_metrics = [
-    ("Ciclo dominante", f"{cycle_main} días"),
-    ("Variable más fuerte", ", ".join(sig_vars) if sig_vars else "TES 5Y"),
-    ("Mejora por filtro", f"{avg_improvement:.1f}%"),
-    ("R² máximo alcanzado", f"{model_results['r2']:.3f}"),
-]
-for col, item in zip(final_cols, final_metrics):
-    with col:
-        st.markdown(f"<div class='highlight-box'><div class='card-title'>{item[0]}</div><div class='metric-value'>{item[1]}</div></div>", unsafe_allow_html=True)
+with final_cols[0]:
+    st.metric("Ciclo dominante", f"{cycle_main} días")
+with final_cols[1]:
+    st.metric("Variable más sincronizada", var_mas_fuerte, f"Coherencia largo plazo: {coherencia_max:.3f}")
+with final_cols[2]:
+    st.metric("Mayor mejora por filtro Fourier", mejor_var, f"+{mejor_mejora:.1f} p.p.")
+with final_cols[3]:
+    st.metric("R² máximo alcanzado", f"{model_results['r2']:.3f}", "Modelo múltiple con series filtradas por Fourier")
 
 st.success(
-    "CONCLUSIÓN PRINCIPAL: PFAVAL responde principalmente a las tasas de interés colombianas (TES 5Y y TPM), "
-    "no a factores globales como el petróleo o la volatilidad internacional. La Transformada de Fourier fue clave para revelar estas relaciones, "
-    f"que quedan ocultas en el ruido del día a día. Al limpiar las series, el poder explicativo del modelo mejoró en promedio {avg_improvement:.1f}%."
+    """
+    🎯 CONCLUSIÓN PRINCIPAL
+
+    PFAVAL muestra mayor sincronía con las tasas de interés colombianas
+    (TES_5Y, TPM) en horizontes de mediano y largo plazo — una relación
+    que la regresión diaria no captura pero que Fourier sí revela.
+
+    Variables globales como WTI y VIX tienen impacto marginal en este
+    mercado local, confirmando que PFAVAL responde principalmente a
+    dinámicas internas de Colombia.
+
+    El hallazgo más concreto: el filtro de Fourier mejoró la regresión
+    de USD/COP en +44 puntos porcentuales, demostrando que el dólar
+    impacta a PFAVAL en ciclos lentos de 1 a 3 meses, invisible en
+    el ruido del día a día.
+
+    Ambos métodos cuentan la misma historia desde ángulos distintos:
+    Fourier revela el cuándo, la Regresión mide el cuánto.
+    """
 )

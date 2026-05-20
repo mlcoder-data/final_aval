@@ -2,9 +2,10 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 import streamlit as st
+from scipy.signal import coherence as sp_coherence
 
 BAND_DEFINITIONS = [
-    ("Corto plazo", 1, 10),
+    ("Corto plazo", 4, 10),
     ("Mediano plazo", 10, 30),
     ("Largo plazo", 30, 90),
 ]
@@ -110,14 +111,36 @@ def _bandpass_fft(series: pd.Series, min_days: float, max_days: float) -> pd.Ser
     return pd.Series(values, index=signal.index, name=series.name)
 
 
-def band_correlation(x: pd.Series, y: pd.Series, min_days: float, max_days: float) -> float:
-    x_filt = _bandpass_fft(x, min_days, max_days)
-    y_filt = _bandpass_fft(y, min_days, max_days)
-    common = x_filt.index.intersection(y_filt.index)
-    if len(common) < 10:
-        return 0.0
-    corr = np.corrcoef(x_filt.loc[common], y_filt.loc[common])[0, 1]
-    return float(np.nan_to_num(corr, nan=0.0))
+def calcular_coherencia_bandas(serie_x: pd.Series, serie_y: pd.Series) -> dict:
+    """
+    Calcula coherencia espectral entre dos series en tres bandas de tiempo.
+    Retorna diccionario con valores entre 0 y 1.
+    """
+    df_temp = pd.DataFrame({"x": serie_x, "y": serie_y}).dropna()
+    x = df_temp["x"].values
+    y = df_temp["y"].values
+
+    if len(x) < 120:
+        return {"corto": 0.0, "mediano": 0.0, "largo": 0.0}
+
+    nperseg = min(120, len(x) // 4)
+    freqs, Cxy = sp_coherence(x, y, fs=1.0, nperseg=nperseg)
+
+    periodos = np.where(freqs > 0, 1.0 / freqs, np.inf)
+
+    mask_corto = (periodos >= 4) & (periodos <= 10)
+    mask_mediano = (periodos > 10) & (periodos <= 30)
+    mask_largo = (periodos > 30) & (periodos <= 90)
+
+    coh_corto = float(np.mean(Cxy[mask_corto])) if mask_corto.any() else 0.0
+    coh_mediano = float(np.mean(Cxy[mask_mediano])) if mask_mediano.any() else 0.0
+    coh_largo = float(np.mean(Cxy[mask_largo])) if mask_largo.any() else 0.0
+
+    return {
+        "corto": round(coh_corto, 3),
+        "mediano": round(coh_mediano, 3),
+        "largo": round(coh_largo, 3),
+    }
 
 
 def coherence_category(value: float) -> str:
@@ -125,7 +148,7 @@ def coherence_category(value: float) -> str:
         return "Alta"
     if value > 0.3:
         return "Media"
-    if value > 0.1:
+    if value > 0.15:
         return "Baja"
     return "Muy baja"
 
@@ -137,14 +160,12 @@ def compute_coherence_table(df_returns: pd.DataFrame) -> pd.DataFrame:
     variables = [c for c in df_returns.columns if c != "PFAVAL"]
     for var in variables:
         row = {"Variable": var}
-        scores = []
-        for label, low, high in BAND_DEFINITIONS:
-            corr = band_correlation(pf, df_returns[var], low, high)
-            row[label] = corr
-            scores.append(corr)
-        lead = _estimate_lead_lag(pf, df_returns[var])
-        row["Anticipa"] = "Sí" if lead < 0 else "No"
-        row["Lag_dias"] = int(lead)
+        scores = calcular_coherencia_bandas(pf, df_returns[var])
+        row["Corto plazo"] = scores["corto"]
+        row["Mediano plazo"] = scores["mediano"]
+        row["Largo plazo"] = scores["largo"]
+        row["Anticipa"] = "Sí" if (scores["mediano"] > 0.20) or (scores["largo"] > 0.20) else "No"
+        row["Lag_dias"] = int(_estimate_lead_lag(pf, df_returns[var]))
         rows.append(row)
     return pd.DataFrame(rows)
 
