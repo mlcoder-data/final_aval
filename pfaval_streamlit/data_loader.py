@@ -5,10 +5,14 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 
+# Base del repositorio (dos niveles arriba del archivo: proyecto_root)
+BASE_DIR = Path(__file__).resolve().parents[1]
+RAW_DIR = BASE_DIR / "pfaval_study" / "data" / "raw"
+
 RUTAS = {
-    "TES_5Y": Path("D:/ITM-------WORKSPACE/IA_code/Fourier_Analisis/pfaval_study/data/raw/TSE.xlsx"),
-    "TPM": Path("D:/ITM-------WORKSPACE/IA_code/Fourier_Analisis/pfaval_study/data/raw/TPM.xlsx"),
-    "CDS Colombia": Path("D:/ITM-------WORKSPACE/IA_code/Fourier_Analisis/pfaval_study/data/raw/CDS_COL.csv"),
+    "TES_5Y": RAW_DIR / "TSE.xlsx",
+    "TPM": RAW_DIR / "TPM.xlsx",
+    "CDS Colombia": RAW_DIR / "CDS_COL.csv",
 }
 
 TICKERS = {
@@ -54,6 +58,10 @@ def _choose_value_column(df: pd.DataFrame) -> str:
 
 
 def _load_excel_data(path: Path) -> pd.Series:
+    if not Path(path).exists():
+        raise FileNotFoundError(
+            f"Archivo Excel no encontrado: {path}. Coloque los archivos en '{RAW_DIR}' o actualice `RUTAS` en pfaval_streamlit/data_loader.py"
+        )
     df = pd.read_excel(path, dtype=str)
     if df.shape[0] > 0:
         first_row = df.iloc[0].astype(str).str.lower().str.strip()
@@ -69,6 +77,10 @@ def _load_excel_data(path: Path) -> pd.Series:
 
 
 def _load_cds_data(path: Path) -> pd.Series:
+    if not Path(path).exists():
+        raise FileNotFoundError(
+            f"Archivo CDS no encontrado: {path}. Coloque los archivos en '{RAW_DIR}' o actualice `RUTAS` en pfaval_streamlit/data_loader.py"
+        )
     for sep in [",", ";"]:
         try:
             df = pd.read_csv(path, sep=sep, dtype=str)
